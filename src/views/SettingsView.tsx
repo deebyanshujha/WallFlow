@@ -16,12 +16,15 @@ interface Props {
 }
 
 const PROVIDERS = [
-  { id: "unsplash", label: "Unsplash" },
-  { id: "pexels", label: "Pexels" },
-  { id: "local", label: "Local only (never downloads)" },
+  { id: "wallhaven", label: "Wallhaven (no key needed)", keyOptional: true },
+  { id: "unsplash", label: "Unsplash", keyOptional: false },
+  { id: "pexels", label: "Pexels", keyOptional: false },
+  { id: "local", label: "Local only (never downloads)", keyOptional: false },
 ];
 
+// "" asks the provider for anything at all — its widest random pool.
 const CATEGORIES = [
+  "",
   "nature",
   "landscape",
   "mountains",
@@ -32,7 +35,13 @@ const CATEGORIES = [
   "minimal",
   "space",
   "abstract",
+  "cars",
+  "anime",
+  "digital art",
+  "dark",
 ];
+
+const categoryLabel = (c: string) => (c ? c : "Anything (surprise me)");
 
 const INTERVALS = [
   { hours: 24, label: "Once per day" },
@@ -50,6 +59,9 @@ export default function SettingsView({ status, setStatus, refresh }: Props) {
   useEffect(() => setDraft(status.settings), [status.settings]);
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(status.settings);
+  const searching = draft.source_mode === "search";
+  const searchMissing = searching && !draft.search_query.trim();
+  const keyOptional = PROVIDERS.find((p) => p.id === draft.provider)?.keyOptional ?? false;
 
   function update<K extends keyof Settings>(key: K, value: Settings[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -103,47 +115,70 @@ export default function SettingsView({ status, setStatus, refresh }: Props) {
 
       <div className="card">
         <h2>Wallpaper source</h2>
-        <div className="field-row">
-          <div className="field">
-            <label>Provider</label>
-            <select
-              value={draft.provider}
-              onChange={(e) => update("provider", e.target.value)}
+        <div className="field">
+          <label>Provider</label>
+          <select
+            value={draft.provider}
+            onChange={(e) => update("provider", e.target.value)}
+          >
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>Find wallpapers by</label>
+          <div className="segmented" role="tablist">
+            <button
+              role="tab"
+              aria-selected={!searching}
+              className={searching ? "" : "active"}
+              onClick={() => update("source_mode", "category")}
             >
-              {PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
+              Category
+            </button>
+            <button
+              role="tab"
+              aria-selected={searching}
+              className={searching ? "active" : ""}
+              onClick={() => update("source_mode", "search")}
+            >
+              My own search
+            </button>
           </div>
-          <div className="field">
-            <label>Category</label>
+
+          {searching ? (
+            <input
+              type="text"
+              placeholder="e.g. blue cars, rainy tokyo street, cyberpunk"
+              maxLength={100}
+              autoFocus
+              value={draft.search_query}
+              onChange={(e) => update("search_query", e.target.value)}
+            />
+          ) : (
             <select
               value={draft.category}
               onChange={(e) => update("category", e.target.value)}
             >
               {CATEGORIES.map((c) => (
                 <option key={c} value={c}>
-                  {c}
+                  {categoryLabel(c)}
                 </option>
               ))}
             </select>
-          </div>
-        </div>
-
-        <div className="field">
-          <label>Search wallpapers</label>
-          <input
-            type="text"
-            placeholder="e.g. blue cars — leave empty to use the category"
-            value={draft.search_query}
-            onChange={(e) => update("search_query", e.target.value)}
-          />
+          )}
           <div className="muted small" style={{ marginTop: 4 }}>
-            {draft.search_query.trim()
-              ? `Next wallpaper will be searched for "${draft.search_query.trim()}".`
-              : `Next wallpaper will use the "${draft.category}" category.`}{" "}
+            {searching
+              ? searchMissing
+                ? "Type what you want to see."
+                : `Next wallpaper will be searched for "${draft.search_query.trim()}".`
+              : draft.category
+                ? `Next wallpaper will come from the "${draft.category}" category.`
+                : "Next wallpaper can be anything — the widest random mix."}{" "}
             Sent only when a wallpaper is actually fetched.
           </div>
         </div>
@@ -151,7 +186,12 @@ export default function SettingsView({ status, setStatus, refresh }: Props) {
         {draft.provider !== "local" && (
           <div className="field">
             <label>
-              API key {status.has_api_key ? "· a key is stored for this provider" : "· not set"}
+              API key{keyOptional ? " (optional)" : ""}{" "}
+              {status.has_api_key
+                ? "· a key is stored for this provider"
+                : keyOptional
+                  ? "· not needed for safe-for-work wallpapers"
+                  : "· not set"}
             </label>
             <div className="row">
               <input
@@ -269,10 +309,16 @@ export default function SettingsView({ status, setStatus, refresh }: Props) {
       </div>
 
       <div className="row">
-        <button className="btn primary" onClick={onSave} disabled={!dirty}>
+        <button className="btn primary" onClick={onSave} disabled={!dirty || searchMissing}>
           {dirty ? "Save settings" : "Saved"}
         </button>
-        {dirty && <span className="muted small">You have unsaved changes.</span>}
+        {dirty && (
+          <span className="muted small">
+            {searchMissing
+              ? "Enter a search, or switch back to Category."
+              : "You have unsaved changes."}
+          </span>
+        )}
       </div>
     </>
   );

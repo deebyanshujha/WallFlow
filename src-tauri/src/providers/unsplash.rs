@@ -1,4 +1,4 @@
-use super::WallpaperProvider;
+use super::{pick_random, urlencode, NothingNew, WallpaperProvider};
 use crate::models::{FetchRequest, RemoteWallpaper};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -6,8 +6,9 @@ use serde::Deserialize;
 pub struct UnsplashProvider;
 
 /// How many candidates to ask for in the one metadata request. Enough to
-/// almost always contain something new without bloating the response.
-const CANDIDATE_COUNT: u32 = 10;
+/// almost always contain something new without bloating the response. 30 is
+/// the API's maximum.
+const CANDIDATE_COUNT: u32 = 30;
 
 #[derive(Deserialize)]
 struct UnsplashPhoto {
@@ -55,9 +56,13 @@ impl WallpaperProvider for UnsplashProvider {
         // pool, so a lone result is very often one we already own — and we
         // would then fall back to the cache and never see anything new.
         // The extra cost is a few KB of JSON; we still download one image.
+        // No query at all means "anything": Unsplash's whole random pool.
+        let query = match req.terms.trim() {
+            "" => String::new(),
+            t => format!("query={}&", urlencode(t)),
+        };
         let url = format!(
-            "https://api.unsplash.com/photos/random?query={}&orientation=landscape&content_filter=high&count={CANDIDATE_COUNT}",
-            urlencode(&req.search_terms())
+            "https://api.unsplash.com/photos/random?{query}orientation=landscape&content_filter=high&count={CANDIDATE_COUNT}"
         );
         let resp = client
             .get(&url)
@@ -85,17 +90,16 @@ impl WallpaperProvider for UnsplashProvider {
             .filter(|p| !req.exclude_remote_ids.contains(&p.id))
             .collect();
         if unseen.is_empty() {
-            return Err(anyhow!(
-                "all {total} Unsplash candidates were already in the cache"
-            ));
+            return Err(NothingNew(format!(
+                "all {total} Unsplash candidates were already shown"
+            ))
+            .into());
         }
 
-        let photo = unseen
-            .iter()
-            .find(|p| p.width >= req.width && p.height >= req.height)
-            // Nothing covers the screen outright, so take the largest we were
-            // offered rather than giving up on a new wallpaper entirely.
-            .or_else(|| unseen.iter().max_by_key(|p| p.width as u64 * p.height as u64))
+        // A random one of those that cover the screen — always taking the
+        // first match made the same few photos win every time. If none cover
+        // it, any unseen one is still better than no new wallpaper.
+        let photo = pick_random(&unseen, |p| p.width >= req.width && p.height >= req.height)
             .ok_or_else(|| anyhow!("no usable Unsplash candidate"))?;
 
         Ok(RemoteWallpaper {
@@ -131,20 +135,6 @@ fn build_download_url(raw: &str, width: u32, height: u32) -> String {
     format!("{raw}{separator}w={width}&h={height}&fit=crop&crop=entropy&q=90&fm=jpg")
 }
 
-fn urlencode(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            ' ' => "+".to_string(),
-            other => other
-                .to_string()
-                .bytes()
-                .map(|b| format!("%{b:02X}"))
-                .collect(),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,19 +165,5 @@ mod tests {
             let url = build_download_url("https://images.unsplash.com/p?ixid=X", w, h);
             assert!(url.contains(&format!("w={w}&h={h}")), "{url}");
         }
-    }
-
-    #[test]
-    fn search_query_wins_over_category_but_category_is_the_fallback() {
-        let mut req = crate::models::FetchRequest {
-            category: "nature".into(),
-            query: "  blue cars  ".into(),
-            width: 1920,
-            height: 1080,
-            exclude_remote_ids: vec![],
-        };
-        assert_eq!(req.search_terms(), "blue cars");
-        req.query = "   ".into();
-        assert_eq!(req.search_terms(), "nature");
     }
 }

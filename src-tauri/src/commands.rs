@@ -82,6 +82,8 @@ pub fn save_settings(
     incoming.max_storage_mb = incoming.max_storage_mb.clamp(50, 20_000);
     incoming.interval_hours = incoming.interval_hours.clamp(1, 720);
     incoming.preferred_hour = incoming.preferred_hour.min(23);
+    incoming.search_query = incoming.search_query.trim().chars().take(100).collect();
+    incoming.normalize();
 
     {
         let conn = state.conn.lock().unwrap();

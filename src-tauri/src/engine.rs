@@ -1,5 +1,5 @@
 use crate::models::{AppStatus, FetchRequest, Settings, Wallpaper};
-use crate::providers::Provider;
+use crate::providers::{NothingNew, Provider};
 use crate::{db, platform, secrets, storage};
 use anyhow::{anyhow, Result};
 use chrono::{Duration, Local, TimeZone, Timelike, Utc};
@@ -74,7 +74,7 @@ pub async fn change_wallpaper(state: &AppState, force_online: bool) -> Result<()
     let (settings, exclude) = {
         let conn = state.conn.lock().unwrap();
         let s = db::load_settings(&conn)?;
-        let e = db::known_remote_ids(&conn, &s.provider, 100)?;
+        let e = db::known_remote_ids(&conn, &s.provider, SEEN_HISTORY)?;
         (s, e)
     };
 
@@ -103,9 +103,11 @@ pub async fn change_wallpaper(state: &AppState, force_online: bool) -> Result<()
     // Offline / failed path: reuse what we already have.
     let cached = {
         let conn = state.conn.lock().unwrap();
+        // Cached wallpapers are tagged with what was searched for, so match
+        // on the same terms rather than the category alone.
         db::pick_cached(
             &conn,
-            &settings.category,
+            &settings.search_terms(),
             settings.current_wallpaper_id.as_deref(),
         )?
     };
@@ -195,30 +197,50 @@ pub fn apply(state: &AppState, w: &Wallpaper) -> Result<()> {
     Ok(())
 }
 
-/// One request for metadata, one request for the image. Nothing else.
+/// How many past downloads per provider are never offered again. Large enough
+/// that repeats are effectively gone; bounded so a narrow search can recycle
+/// its oldest results instead of running dry forever.
+const SEEN_HISTORY: usize = 2000;
+
+/// Metadata requests allowed per change when a provider only offers images we
+/// have already shown. Each retry is a fresh random sample.
+const FETCH_ATTEMPTS: usize = 3;
+
+/// One request for metadata (a couple more only if every candidate was a
+/// repeat), one request for the image. Nothing else.
 async fn try_download(
     state: &AppState,
     settings: &Settings,
     exclude: Vec<String>,
 ) -> Result<Wallpaper> {
     let provider = Provider::from_id(&settings.provider);
-    if !provider.requires_api_key() {
+    if !provider.downloads() {
         return Err(anyhow!("the local provider never downloads"));
     }
-    let api_key = secrets::get_api_key(&settings.provider)
-        .ok_or_else(|| anyhow!("no API key set for {}", settings.provider))?;
+    let api_key = match secrets::get_api_key(&settings.provider) {
+        Some(k) => k,
+        None if !provider.requires_api_key() => String::new(),
+        None => return Err(anyhow!("no API key set for {}", settings.provider)),
+    };
 
     let (screen_width, screen_height) = platform::primary_resolution();
     let req = FetchRequest {
-        category: settings.category.clone(),
-        query: settings.search_query.clone(),
+        terms: settings.search_terms(),
         width: screen_width,
         height: screen_height,
         exclude_remote_ids: exclude,
     };
 
     state.set_network_active(true);
-    let result = download_inner(state, &provider, &api_key, &req).await;
+    let mut result = download_inner(state, &provider, &api_key, &req).await;
+    for _ in 1..FETCH_ATTEMPTS {
+        match &result {
+            Err(e) if e.is::<NothingNew>() => {
+                result = download_inner(state, &provider, &api_key, &req).await;
+            }
+            _ => break,
+        }
+    }
     state.set_network_active(false);
     result
 }
@@ -234,7 +256,7 @@ async fn download_inner(
     {
         let conn = state.conn.lock().unwrap();
         if db::has_remote_id(&conn, provider.id(), &remote.remote_id)? {
-            return Err(anyhow!("provider offered a wallpaper we already have"));
+            return Err(NothingNew("provider offered a wallpaper we already have".into()).into());
         }
     }
 
@@ -296,7 +318,11 @@ async fn download_inner(
         downloaded_at: Utc::now().timestamp(),
         // Record what was actually searched for, which is the user's query when
         // they gave one — otherwise history would credit the wrong term.
-        category: req.search_terms(),
+        category: if req.terms.trim().is_empty() {
+            "anything".to_string()
+        } else {
+            req.terms.trim().to_string()
+        },
         author_name: remote.author_name,
         author_url: remote.author_url,
         source_url: remote.source_url,
@@ -342,10 +368,11 @@ pub fn enforce_storage_limits(state: &AppState) -> Result<()> {
 /// the API — this only decides whether the *next* wallpaper may come from the
 /// network, and a recent failure keeps us offline until the next slot.
 fn should_attempt_online(state: &AppState, settings: &Settings) -> bool {
-    if Provider::from_id(&settings.provider).id() == "local" {
+    let provider = Provider::from_id(&settings.provider);
+    if !provider.downloads() {
         return false;
     }
-    if !secrets::has_api_key(&settings.provider) {
+    if provider.requires_api_key() && !secrets::has_api_key(&settings.provider) {
         return false;
     }
     let rt = state.runtime.lock().unwrap();

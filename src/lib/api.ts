@@ -24,6 +24,9 @@ export interface Wallpaper {
 
 export interface Settings {
   provider: string;
+  /** "category" uses `category`; "search" uses `search_query`. */
+  source_mode: "category" | "search";
+  /** Empty means "anything". */
   category: string;
   search_query: string;
   interval_hours: number;

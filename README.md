@@ -30,6 +30,8 @@ cached wallpapers). To enable downloads:
 - Unsplash: register an app at <https://unsplash.com/developers> and copy the
   *Access Key*.
 - Pexels: request a key at <https://www.pexels.com/api/>.
+- Wallhaven: works without a key for safe-for-work wallpapers. A key from
+  <https://wallhaven.cc/settings/account> is optional.
 
 Paste it into **Settings → Wallpaper source → API key**. It is written to the
 **Windows Credential Manager** under the service name `WallFlow`. It is never
@@ -97,7 +99,7 @@ default is stored in a separate directory that the cleanup query cannot reach.
 - Downloads are capped at 25 MB and rejected unless the response is `image/*`.
 - HTTPS is enforced at the HTTP client level (`https_only`), and non-HTTPS image
   URLs are refused even if a provider returns one.
-- Requests carry only a category keyword. No file paths, machine identifiers, or
+- Requests carry only a category keyword or your search text. No file paths, machine identifiers, or
   personal data are sent. There is no telemetry or analytics of any kind.
 - Nothing downloaded is ever executed.
 
@@ -113,7 +115,7 @@ src-tauri/
     engine.rs           the change flow, fallbacks, storage limits, scheduling maths
     scheduler.rs        the one background timer
     commands.rs         the IPC surface exposed to the frontend
-    providers/          WallpaperProvider + Unsplash / Pexels / Local
+    providers/          WallpaperProvider + Wallhaven / Unsplash / Pexels / Local
     platform.rs         Windows: wallpaper, screen metrics, run-at-startup
     storage.rs          paths, filename safety, image validation
     secrets.rs          Credential Manager

@@ -214,3 +214,26 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 }
 
 .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+.segmented {
+  display: inline-flex;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  margin-bottom: 12px;
+}
+.segmented button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 14px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.segmented button:hover { color: var(--text); }
+.segmented button.active {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}

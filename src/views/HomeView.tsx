@@ -86,12 +86,22 @@ export default function HomeView({ status, busy, setBusy, setStatus, refresh }: 
           <span className="muted">Source</span>
           <strong>
             {settings.provider}
-            {!status.has_api_key && settings.provider !== "local" ? " · no API key" : ""}
+            {!status.has_api_key && !["local", "wallhaven"].includes(settings.provider)
+              ? " · no API key"
+              : ""}
           </strong>
         </div>
         <div className="row spread" style={{ marginTop: 6 }}>
-          <span className="muted">Category</span>
-          <strong>{settings.category}</strong>
+          <span className="muted">
+            {settings.source_mode === "search" && settings.search_query.trim()
+              ? "Search"
+              : "Category"}
+          </span>
+          <strong>
+            {settings.source_mode === "search" && settings.search_query.trim()
+              ? `"${settings.search_query.trim()}"`
+              : settings.category || "Anything"}
+          </strong>
         </div>
         <div className="row spread" style={{ marginTop: 6 }}>
           <span className="muted">Downloading at</span>

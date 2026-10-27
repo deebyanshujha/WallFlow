@@ -41,7 +41,19 @@ fn migrate(conn: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
-         );",
+         );
+         -- Every remote id we have ever downloaded. Unlike `wallpapers`, rows
+         -- here survive cache eviction, which is what stops an evicted
+         -- wallpaper from being downloaded and shown again a week later.
+         CREATE TABLE IF NOT EXISTS seen_wallpapers (
+            provider  TEXT NOT NULL,
+            remote_id TEXT NOT NULL,
+            seen_at   INTEGER NOT NULL,
+            PRIMARY KEY (provider, remote_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_seen_at ON seen_wallpapers(seen_at);
+         INSERT OR IGNORE INTO seen_wallpapers (provider, remote_id, seen_at)
+            SELECT provider, remote_id, downloaded_at FROM wallpapers;",
     )?;
 
     // Existing installs predate these columns; a duplicate-column error just
@@ -64,10 +76,12 @@ pub fn load_settings(conn: &Connection) -> Result<Settings> {
             |r| r.get(0),
         )
         .optional()?;
-    Ok(match raw {
+    let mut settings: Settings = match raw {
         Some(json) => serde_json::from_str(&json).unwrap_or_default(),
         None => Settings::default(),
-    })
+    };
+    settings.normalize();
+    Ok(settings)
 }
 
 pub fn save_settings(conn: &Connection, settings: &Settings) -> Result<()> {
@@ -132,6 +146,11 @@ pub fn insert_wallpaper(conn: &Connection, w: &Wallpaper) -> Result<()> {
             w.last_used_at,
         ],
     )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO seen_wallpapers (provider, remote_id, seen_at)
+         VALUES (?1, ?2, ?3)",
+        params![w.provider, w.remote_id, w.downloaded_at],
+    )?;
     Ok(())
 }
 
@@ -149,35 +168,49 @@ pub fn get_wallpaper(conn: &Connection, id: &str) -> Result<Option<Wallpaper>> {
         .optional()?)
 }
 
-/// Least recently shown cached wallpaper for a category — the offline pick.
-/// Falls back across categories if the requested one has nothing.
+/// The offline pick: a random one of the least recently shown cached
+/// wallpapers for these search terms, so the cache rotates without a fixed
+/// order. Falls back across categories if the requested one has nothing.
 pub fn pick_cached(conn: &Connection, category: &str, exclude_id: Option<&str>) -> Result<Option<Wallpaper>> {
+    /// Never-shown wallpapers sort first; among the rest, the oldest shown.
+    const POOL: i64 = 3;
     let sql = format!(
         "SELECT {SELECT_COLS} FROM wallpapers
          WHERE (?1 = '' OR category = ?1) AND (?2 IS NULL OR id != ?2)
          ORDER BY last_used_at IS NOT NULL, last_used_at ASC, downloaded_at DESC
-         LIMIT 1"
+         LIMIT {POOL}"
     );
-    let found = conn
-        .query_row(&sql, params![category, exclude_id], row_to_wallpaper)
-        .optional()?;
-    if found.is_some() {
-        return Ok(found);
+    let pick = |category: &str| -> Result<Option<Wallpaper>> {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![category, exclude_id], row_to_wallpaper)?;
+        let mut pool = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        if pool.is_empty() {
+            return Ok(None);
+        }
+        let i = crate::providers::random_below(pool.len());
+        Ok(Some(pool.swap_remove(i)))
+    };
+    match pick(category)? {
+        Some(w) => Ok(Some(w)),
+        None => pick(""),
     }
-    Ok(conn
-        .query_row(&sql, params!["", exclude_id], row_to_wallpaper)
-        .optional()?)
 }
 
+/// Ids we must not download again, newest first. Read from the permanent
+/// seen list, not the cache, so evicted wallpapers stay excluded. The limit
+/// lets very old ones become eligible again eventually, so a narrow search
+/// never runs completely dry.
 pub fn known_remote_ids(conn: &Connection, provider: &str, limit: usize) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT remote_id FROM wallpapers WHERE provider = ?1
-         ORDER BY downloaded_at DESC LIMIT ?2",
+        "SELECT remote_id FROM seen_wallpapers WHERE provider = ?1
+         ORDER BY seen_at DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![provider, limit as i64], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// True if the wallpaper is still in the cache (re-inserting would wipe its
+/// favorite flag and history).
 pub fn has_remote_id(conn: &Connection, provider: &str, remote_id: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM wallpapers WHERE provider = ?1 AND remote_id = ?2",
