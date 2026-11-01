@@ -34,6 +34,7 @@ fn migrate(conn: &Connection) -> Result<()> {
             source_url    TEXT,
             is_favorite   INTEGER NOT NULL DEFAULT 0,
             last_used_at  INTEGER,
+            nsfw          INTEGER NOT NULL DEFAULT 0,
             UNIQUE(provider, remote_id)
          );
          CREATE INDEX IF NOT EXISTS idx_wallpapers_downloaded
@@ -62,6 +63,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         "ALTER TABLE wallpapers ADD COLUMN source_width INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE wallpapers ADD COLUMN source_height INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE wallpapers ADD COLUMN format TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE wallpapers ADD COLUMN nsfw INTEGER NOT NULL DEFAULT 0",
     ] {
         let _ = conn.execute(stmt, []);
     }
@@ -112,20 +114,21 @@ fn row_to_wallpaper(row: &rusqlite::Row) -> rusqlite::Result<Wallpaper> {
         source_url: row.get("source_url")?,
         is_favorite: row.get::<_, i64>("is_favorite")? != 0,
         last_used_at: row.get("last_used_at")?,
+        nsfw: row.get::<_, i64>("nsfw")? != 0,
     })
 }
 
 const SELECT_COLS: &str = "id, provider, remote_id, file_name, width, height, \
      source_width, source_height, format, bytes, \
-     downloaded_at, category, author_name, author_url, source_url, is_favorite, last_used_at";
+     downloaded_at, category, author_name, author_url, source_url, is_favorite, last_used_at, nsfw";
 
 pub fn insert_wallpaper(conn: &Connection, w: &Wallpaper) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO wallpapers
          (id, provider, remote_id, file_name, width, height,
           source_width, source_height, format, bytes, downloaded_at,
-          category, author_name, author_url, source_url, is_favorite, last_used_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+          category, author_name, author_url, source_url, is_favorite, last_used_at, nsfw)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
         params![
             w.id,
             w.provider,
@@ -144,6 +147,7 @@ pub fn insert_wallpaper(conn: &Connection, w: &Wallpaper) -> Result<()> {
             w.source_url,
             w.is_favorite as i64,
             w.last_used_at,
+            w.nsfw as i64,
         ],
     )?;
     conn.execute(
@@ -171,12 +175,19 @@ pub fn get_wallpaper(conn: &Connection, id: &str) -> Result<Option<Wallpaper>> {
 /// The offline pick: a random one of the least recently shown cached
 /// wallpapers for these search terms, so the cache rotates without a fixed
 /// order. Falls back across categories if the requested one has nothing.
-pub fn pick_cached(conn: &Connection, category: &str, exclude_id: Option<&str>) -> Result<Option<Wallpaper>> {
+/// NSFW wallpapers are only offered when `allow_nsfw` is set.
+pub fn pick_cached(
+    conn: &Connection,
+    category: &str,
+    exclude_id: Option<&str>,
+    allow_nsfw: bool,
+) -> Result<Option<Wallpaper>> {
     /// Never-shown wallpapers sort first; among the rest, the oldest shown.
     const POOL: i64 = 3;
+    let nsfw_filter = if allow_nsfw { "" } else { "AND nsfw = 0" };
     let sql = format!(
         "SELECT {SELECT_COLS} FROM wallpapers
-         WHERE (?1 = '' OR category = ?1) AND (?2 IS NULL OR id != ?2)
+         WHERE (?1 = '' OR category = ?1) AND (?2 IS NULL OR id != ?2) {nsfw_filter}
          ORDER BY last_used_at IS NOT NULL, last_used_at ASC, downloaded_at DESC
          LIMIT {POOL}"
     );

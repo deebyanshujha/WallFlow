@@ -30,8 +30,9 @@ cached wallpapers). To enable downloads:
 - Unsplash: register an app at <https://unsplash.com/developers> and copy the
   *Access Key*.
 - Pexels: request a key at <https://www.pexels.com/api/>.
-- Wallhaven: works without a key for safe-for-work wallpapers. A key from
-  <https://wallhaven.cc/settings/account> is optional.
+- Wallhaven: works without a key for safe-for-work wallpapers. With a key from
+  <https://wallhaven.cc/settings/account> it searches SFW, sketchy and NSFW,
+  and falls back to the keyless SFW search if the keyed request fails.
 
 Paste it into **Settings → Wallpaper source → API key**. It is written to the
 **Windows Credential Manager** under the service name `WallFlow`. It is never

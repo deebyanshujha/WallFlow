@@ -20,6 +20,7 @@ export interface Wallpaper {
   source_url: string | null;
   is_favorite: boolean;
   last_used_at: number | null;
+  nsfw: boolean;
 }
 
 export interface Settings {
@@ -38,6 +39,8 @@ export interface Settings {
   default_wallpaper_path: string | null;
   next_change_at: number;
   current_wallpaper_id: string | null;
+  /** Wallhaven with a key may return sketchy/NSFW; also gates the cache. */
+  allow_nsfw: boolean;
 }
 
 export interface AppStatus {

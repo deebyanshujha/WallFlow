@@ -24,6 +24,9 @@ pub struct Wallpaper {
     pub source_url: Option<String>,
     pub is_favorite: bool,
     pub last_used_at: Option<i64>,
+    /// Marked sketchy or NSFW at the source; hidden while NSFW is off.
+    #[serde(default)]
+    pub nsfw: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +50,14 @@ pub struct Settings {
     pub default_wallpaper_path: Option<String>,
     pub next_change_at: i64,
     pub current_wallpaper_id: Option<String>,
+    /// Lets providers that support it (Wallhaven, with a key) return sketchy
+    /// and NSFW wallpapers, and lets the cache offer ones already downloaded.
+    #[serde(default = "default_true")]
+    pub allow_nsfw: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -66,6 +77,7 @@ impl Default for Settings {
             default_wallpaper_path: None,
             next_change_at: 0,
             current_wallpaper_id: None,
+            allow_nsfw: true,
         }
     }
 }
@@ -122,6 +134,7 @@ pub struct FetchRequest {
     pub width: u32,
     pub height: u32,
     pub exclude_remote_ids: Vec<String>,
+    pub allow_nsfw: bool,
 }
 
 #[cfg(test)]
@@ -175,4 +188,5 @@ pub struct RemoteWallpaper {
     /// Endpoint some providers require us to call once the image is actually
     /// used, so their download counts stay accurate (Unsplash API guidelines).
     pub download_trigger_url: Option<String>,
+    pub nsfw: bool,
 }

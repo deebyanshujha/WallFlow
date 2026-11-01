@@ -109,6 +109,7 @@ pub async fn change_wallpaper(state: &AppState, force_online: bool) -> Result<()
             &conn,
             &settings.search_terms(),
             settings.current_wallpaper_id.as_deref(),
+            settings.allow_nsfw,
         )?
     };
 
@@ -150,6 +151,30 @@ pub fn reapply_current(state: &AppState) {
         _ => {
             let _ = apply_default(state, &settings);
         }
+    }
+}
+
+/// Called when NSFW is switched off: if the desktop is showing an NSFW
+/// wallpaper, swap it for a safe cached one (or the default) right away,
+/// without touching the network.
+pub fn replace_if_nsfw(state: &AppState, settings: &Settings) -> Result<()> {
+    if settings.allow_nsfw {
+        return Ok(());
+    }
+    let replacement = {
+        let conn = state.conn.lock().unwrap();
+        let current = match &settings.current_wallpaper_id {
+            Some(id) => db::get_wallpaper(&conn, id)?,
+            None => None,
+        };
+        if !current.is_some_and(|w| w.nsfw) {
+            return Ok(());
+        }
+        db::pick_cached(&conn, &settings.search_terms(), None, false)?
+    };
+    match replacement {
+        Some(w) => apply(state, &w),
+        None => apply_default(state, settings),
     }
 }
 
@@ -229,6 +254,7 @@ async fn try_download(
         width: screen_width,
         height: screen_height,
         exclude_remote_ids: exclude,
+        allow_nsfw: settings.allow_nsfw,
     };
 
     state.set_network_active(true);
@@ -328,23 +354,29 @@ async fn download_inner(
         source_url: remote.source_url,
         is_favorite: false,
         last_used_at: None,
+        nsfw: remote.nsfw,
     };
 
     {
         let conn = state.conn.lock().unwrap();
         db::insert_wallpaper(&conn, &wallpaper)?;
     }
-    enforce_storage_limits(state)?;
+    // It is not current until apply() runs, so protect it explicitly or a full
+    // cache would evict the very file we are about to set.
+    enforce_storage_limits(state, Some(&wallpaper.id))?;
     Ok(wallpaper)
 }
 
-/// Never deletes the current wallpaper, the user's default, or a favorite.
-pub fn enforce_storage_limits(state: &AppState) -> Result<()> {
+/// Never deletes the current wallpaper, the user's default, a favorite, or `keep`.
+pub fn enforce_storage_limits(state: &AppState, keep: Option<&str>) -> Result<()> {
     let conn = state.conn.lock().unwrap();
     let settings = db::load_settings(&conn)?;
     let mut protected: Vec<String> = Vec::new();
     if let Some(id) = &settings.current_wallpaper_id {
         protected.push(id.clone());
+    }
+    if let Some(id) = keep {
+        protected.push(id.to_string());
     }
 
     let (mut used, mut count) = db::storage_stats(&conn)?;

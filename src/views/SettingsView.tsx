@@ -16,7 +16,7 @@ interface Props {
 }
 
 const PROVIDERS = [
-  { id: "wallhaven", label: "Wallhaven (no key needed)", keyOptional: true },
+  { id: "wallhaven", label: "Wallhaven (key optional, unlocks NSFW)", keyOptional: true },
   { id: "unsplash", label: "Unsplash", keyOptional: false },
   { id: "pexels", label: "Pexels", keyOptional: false },
   { id: "local", label: "Local only (never downloads)", keyOptional: false },
@@ -207,6 +207,28 @@ export default function SettingsView({ status, setStatus, refresh }: Props) {
             <div className="muted small" style={{ marginTop: 4 }}>
               Stored in Windows Credential Manager. It is never shown again or sent anywhere
               except to the provider.
+            </div>
+          </div>
+        )}
+
+        {draft.provider !== "local" && (
+          <div className="field">
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={draft.allow_nsfw}
+                onChange={(e) => update("allow_nsfw", e.target.checked)}
+                style={{ width: "auto" }}
+              />
+              Allow NSFW wallpapers
+            </label>
+            <div className="muted small" style={{ marginTop: 4 }}>
+              {draft.provider === "wallhaven"
+                ? status.has_api_key
+                  ? "Includes sketchy and NSFW results from Wallhaven."
+                  : "Needs a Wallhaven API key; without one only safe-for-work wallpapers are fetched."
+                : "Only Wallhaven offers NSFW wallpapers."}{" "}
+              When off, NSFW wallpapers you already downloaded are skipped too.
             </div>
           </div>
         )}

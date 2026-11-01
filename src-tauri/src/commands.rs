@@ -99,8 +99,9 @@ pub fn save_settings(
 
     crate::refresh_tray(&app);
 
+    engine::replace_if_nsfw(state.inner(), &incoming).map_err(err)?;
     engine::schedule_next(state.inner(), &incoming).map_err(err)?;
-    engine::enforce_storage_limits(state.inner()).map_err(err)?;
+    engine::enforce_storage_limits(state.inner(), None).map_err(err)?;
     state.status().map_err(err)
 }
 

@@ -5,8 +5,13 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
 /// https://wallhaven.cc/help/api — search works without a key for SFW
-/// content; a key is only sent when the user stored one.
+/// content. With a stored key and NSFW allowed we search every purity level
+/// (SFW, sketchy and NSFW); a failed keyed request falls back to keyless SFW.
 pub struct WallhavenProvider;
+
+/// Purity flags are SFW / sketchy / NSFW; anything past SFW needs a key.
+const PURITY_ALL: &str = "111";
+const PURITY_SFW: &str = "100";
 
 #[derive(Deserialize)]
 struct WallhavenSearch {
@@ -24,6 +29,9 @@ struct WallhavenWallpaper {
     #[serde(default)]
     file_type: String,
     path: String,
+    /// "sfw", "sketchy" or "nsfw".
+    #[serde(default)]
+    purity: String,
 }
 
 impl WallpaperProvider for WallhavenProvider {
@@ -40,11 +48,38 @@ impl WallpaperProvider for WallhavenProvider {
         api_key: &str,
         req: &FetchRequest,
     ) -> Result<RemoteWallpaper> {
+        if api_key.is_empty() {
+            return self.search(client, None, req).await;
+        }
+        match self.search(client, Some(api_key), req).await {
+            // Every candidate being a repeat is not a failure; the engine
+            // retries with a new seed, still including NSFW.
+            Err(e) if !e.is::<NothingNew>() => {
+                eprintln!("Wallhaven keyed search failed ({e}); retrying without the key");
+                self.search(client, None, req).await
+            }
+            result => result,
+        }
+    }
+}
+
+impl WallhavenProvider {
+    async fn search(
+        &self,
+        client: &reqwest::Client,
+        api_key: Option<&str>,
+        req: &FetchRequest,
+    ) -> Result<RemoteWallpaper> {
+        let purity = if api_key.is_some() && req.allow_nsfw {
+            PURITY_ALL
+        } else {
+            PURITY_SFW
+        };
         let mut request = client
-            .get(build_search_url(req, &random_seed()))
+            .get(build_search_url(req, &random_seed(), purity))
             .header("Accept", "application/json");
-        if !api_key.is_empty() {
-            request = request.header("X-API-Key", api_key);
+        if let Some(key) = api_key {
+            request = request.header("X-API-Key", key);
         }
         let resp = request.send().await?;
 
@@ -104,16 +139,18 @@ impl WallpaperProvider for WallhavenProvider {
             author_url: None,
             source_url: photo.url.clone(),
             download_trigger_url: None,
+            // Missing purity only happens on SFW-only searches.
+            nsfw: !matches!(photo.purity.as_str(), "sfw" | ""),
         })
     }
 }
 
 /// `sorting=random` with a fresh seed returns a newly shuffled page each
 /// time; `atleast` makes the server drop anything smaller than the display.
-/// Categories are general + anime + people, SFW only.
-fn build_search_url(req: &FetchRequest, seed: &str) -> String {
+/// Categories are general + anime + people.
+fn build_search_url(req: &FetchRequest, seed: &str, purity: &str) -> String {
     format!(
-        "https://wallhaven.cc/api/v1/search?q={}&categories=111&purity=100&sorting=random&seed={seed}&atleast={}x{}",
+        "https://wallhaven.cc/api/v1/search?q={}&categories=111&purity={purity}&sorting=random&seed={seed}&atleast={}x{}",
         urlencode(req.terms.trim()),
         req.width,
         req.height
@@ -150,12 +187,13 @@ mod tests {
             width: 2560,
             height: 1440,
             exclude_remote_ids: vec![],
+            allow_nsfw: true,
         }
     }
 
     #[test]
     fn search_url_is_random_sfw_and_at_least_screen_size() {
-        let url = build_search_url(&req(" blue cars "), "abc123");
+        let url = build_search_url(&req(" blue cars "), "abc123", PURITY_SFW);
         assert!(url.starts_with("https://wallhaven.cc/api/v1/search?"));
         assert!(url.contains("q=blue+cars&"), "{url}");
         assert!(url.contains("sorting=random&seed=abc123"), "{url}");
@@ -164,8 +202,14 @@ mod tests {
     }
 
     #[test]
+    fn keyed_search_includes_every_purity() {
+        let url = build_search_url(&req(""), "abc123", PURITY_ALL);
+        assert!(url.contains("purity=111"), "{url}");
+    }
+
+    #[test]
     fn empty_terms_search_everything() {
-        assert!(build_search_url(&req(""), "abc123").contains("search?q=&"));
+        assert!(build_search_url(&req(""), "abc123", PURITY_SFW).contains("search?q=&"));
     }
 
     #[test]

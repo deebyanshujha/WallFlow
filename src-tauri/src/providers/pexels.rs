@@ -94,6 +94,7 @@ impl WallpaperProvider for PexelsProvider {
             author_url: photo.photographer_url.clone(),
             source_url: photo.url.clone(),
             download_trigger_url: None,
+            nsfw: false,
         })
     }
 }

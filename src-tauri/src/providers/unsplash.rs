@@ -118,6 +118,7 @@ impl WallpaperProvider for UnsplashProvider {
                 .links
                 .as_ref()
                 .and_then(|l| l.download_location.clone()),
+            nsfw: false,
         })
     }
 }
