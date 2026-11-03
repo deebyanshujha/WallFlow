@@ -35,6 +35,7 @@ fn migrate(conn: &Connection) -> Result<()> {
             is_favorite   INTEGER NOT NULL DEFAULT 0,
             last_used_at  INTEGER,
             nsfw          INTEGER NOT NULL DEFAULT 0,
+            trashed_at    INTEGER,
             UNIQUE(provider, remote_id)
          );
          CREATE INDEX IF NOT EXISTS idx_wallpapers_downloaded
@@ -64,6 +65,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         "ALTER TABLE wallpapers ADD COLUMN source_height INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE wallpapers ADD COLUMN format TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE wallpapers ADD COLUMN nsfw INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE wallpapers ADD COLUMN trashed_at INTEGER",
     ] {
         let _ = conn.execute(stmt, []);
     }
@@ -115,20 +117,21 @@ fn row_to_wallpaper(row: &rusqlite::Row) -> rusqlite::Result<Wallpaper> {
         is_favorite: row.get::<_, i64>("is_favorite")? != 0,
         last_used_at: row.get("last_used_at")?,
         nsfw: row.get::<_, i64>("nsfw")? != 0,
+        trashed_at: row.get("trashed_at")?,
     })
 }
 
 const SELECT_COLS: &str = "id, provider, remote_id, file_name, width, height, \
      source_width, source_height, format, bytes, \
-     downloaded_at, category, author_name, author_url, source_url, is_favorite, last_used_at, nsfw";
+     downloaded_at, category, author_name, author_url, source_url, is_favorite, last_used_at, nsfw, trashed_at";
 
 pub fn insert_wallpaper(conn: &Connection, w: &Wallpaper) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO wallpapers
          (id, provider, remote_id, file_name, width, height,
           source_width, source_height, format, bytes, downloaded_at,
-          category, author_name, author_url, source_url, is_favorite, last_used_at, nsfw)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+          category, author_name, author_url, source_url, is_favorite, last_used_at, nsfw, trashed_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             w.id,
             w.provider,
@@ -148,6 +151,7 @@ pub fn insert_wallpaper(conn: &Connection, w: &Wallpaper) -> Result<()> {
             w.is_favorite as i64,
             w.last_used_at,
             w.nsfw as i64,
+            w.trashed_at,
         ],
     )?;
     conn.execute(
@@ -158,11 +162,28 @@ pub fn insert_wallpaper(conn: &Connection, w: &Wallpaper) -> Result<()> {
     Ok(())
 }
 
-pub fn list_wallpapers(conn: &Connection) -> Result<Vec<Wallpaper>> {
-    let sql = format!("SELECT {SELECT_COLS} FROM wallpapers ORDER BY downloaded_at DESC");
+fn list_where(conn: &Connection, clause: &str) -> Result<Vec<Wallpaper>> {
+    let sql = format!("SELECT {SELECT_COLS} FROM wallpapers {clause}");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_wallpaper)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// The newest `limit` wallpapers, favorite or not. A favorite that falls out of
+/// this window leaves History but stays in Favorites.
+pub fn list_history(conn: &Connection, limit: u32) -> Result<Vec<Wallpaper>> {
+    list_where(
+        conn,
+        &format!("WHERE trashed_at IS NULL ORDER BY downloaded_at DESC LIMIT {limit}"),
+    )
+}
+
+pub fn list_favorites(conn: &Connection) -> Result<Vec<Wallpaper>> {
+    list_where(conn, "WHERE is_favorite = 1 ORDER BY downloaded_at DESC")
+}
+
+pub fn list_trash(conn: &Connection) -> Result<Vec<Wallpaper>> {
+    list_where(conn, "WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC")
 }
 
 pub fn get_wallpaper(conn: &Connection, id: &str) -> Result<Option<Wallpaper>> {
@@ -187,7 +208,8 @@ pub fn pick_cached(
     let nsfw_filter = if allow_nsfw { "" } else { "AND nsfw = 0" };
     let sql = format!(
         "SELECT {SELECT_COLS} FROM wallpapers
-         WHERE (?1 = '' OR category = ?1) AND (?2 IS NULL OR id != ?2) {nsfw_filter}
+         WHERE trashed_at IS NULL AND (?1 = '' OR category = ?1)
+           AND (?2 IS NULL OR id != ?2) {nsfw_filter}
          ORDER BY last_used_at IS NOT NULL, last_used_at ASC, downloaded_at DESC
          LIMIT {POOL}"
     );
@@ -231,10 +253,21 @@ pub fn has_remote_id(conn: &Connection, provider: &str, remote_id: &str) -> Resu
     Ok(n > 0)
 }
 
-pub fn set_favorite(conn: &Connection, id: &str, favorite: bool) -> Result<()> {
+/// Favoriting also restores from the trash.
+pub fn add_favorite(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
-        "UPDATE wallpapers SET is_favorite = ?2 WHERE id = ?1",
-        params![id, favorite as i64],
+        "UPDATE wallpapers SET is_favorite = 1, trashed_at = NULL WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+/// Removing a favorite sends it to the trash rather than deleting it.
+pub fn trash_favorite(conn: &Connection, id: &str, at: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE wallpapers SET is_favorite = 0, trashed_at = ?2
+         WHERE id = ?1 AND is_favorite = 1",
+        params![id, at],
     )?;
     Ok(())
 }
@@ -261,6 +294,29 @@ pub fn storage_stats(conn: &Connection) -> Result<(u64, u32)> {
     Ok((bytes as u64, count as u32))
 }
 
+/// Bytes the storage budget applies to. Favorites and the trash are exempt, so
+/// a large favorites collection can never push out recent wallpapers.
+pub fn history_bytes(conn: &Connection) -> Result<u64> {
+    let bytes: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(bytes), 0) FROM wallpapers
+         WHERE is_favorite = 0 AND trashed_at IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(bytes as u64)
+}
+
+/// Trashed wallpapers, or only those trashed at or before `cutoff` when given.
+pub fn trash_candidates(conn: &Connection, cutoff: Option<i64>) -> Result<Vec<Wallpaper>> {
+    let sql = format!(
+        "SELECT {SELECT_COLS} FROM wallpapers
+         WHERE trashed_at IS NOT NULL AND (?1 IS NULL OR trashed_at <= ?1)"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![cutoff], row_to_wallpaper)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Oldest non-favorite wallpapers, excluding the protected ids, for eviction.
 pub fn eviction_candidates(
     conn: &Connection,
@@ -268,7 +324,7 @@ pub fn eviction_candidates(
 ) -> Result<Vec<Wallpaper>> {
     let sql = format!(
         "SELECT {SELECT_COLS} FROM wallpapers
-         WHERE is_favorite = 0 ORDER BY downloaded_at ASC"
+         WHERE is_favorite = 0 AND trashed_at IS NULL ORDER BY downloaded_at ASC"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_wallpaper)?;

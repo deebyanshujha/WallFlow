@@ -14,7 +14,7 @@ export default function HomeView({ status, busy, setBusy, setStatus, refresh }: 
   const { settings, current } = status;
   const usedPct = Math.min(
     100,
-    (status.storage_used_bytes / (settings.max_storage_mb * 1024 * 1024)) * 100
+    (status.history_bytes / (settings.max_storage_mb * 1024 * 1024)) * 100
   );
 
   async function onChangeNow() {
@@ -121,7 +121,7 @@ export default function HomeView({ status, busy, setBusy, setStatus, refresh }: 
         </div>
         <div className="row spread small muted">
           <span>
-            {formatBytes(status.storage_used_bytes)} of {settings.max_storage_mb} MB ·{" "}
+            {formatBytes(status.history_bytes)} of {settings.max_storage_mb} MB ·{" "}
             {status.wallpaper_count} wallpapers
           </span>
           <span>keeping {settings.keep_recent} recent</span>

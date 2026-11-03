@@ -90,7 +90,7 @@ export default function HistoryView({
               </button>
               <button
                 className="btn icon danger"
-                title="Delete"
+                title={w.is_favorite ? "Move to trash" : "Delete"}
                 disabled={w.id === currentId}
                 onClick={() => guard(() => deleteWallpaper(w.id))}
               >

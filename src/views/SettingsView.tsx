@@ -304,8 +304,9 @@ export default function SettingsView({ status, setStatus, refresh }: Props) {
           </div>
         </div>
         <div className="muted small">
-          Current usage: {formatBytes(status.storage_used_bytes)}. Favorites, the current
-          wallpaper, and your default are never deleted.
+          Current usage: {formatBytes(status.storage_used_bytes)}. These limits apply to
+          History only. Favorites have no limit, and the current wallpaper and your default
+          are never deleted. Removed favorites stay in Trash for 30 days.
         </div>
       </div>
 

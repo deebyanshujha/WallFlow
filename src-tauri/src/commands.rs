@@ -1,6 +1,7 @@
 use crate::engine::{self, AppState};
 use crate::models::{AppStatus, Settings, Wallpaper};
 use crate::{db, scheduler, secrets, storage};
+use chrono::Utc;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
@@ -18,7 +19,20 @@ pub fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<AppStatus> {
 #[tauri::command]
 pub fn get_history(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Wallpaper>> {
     let conn = state.conn.lock().unwrap();
-    db::list_wallpapers(&conn).map_err(err)
+    let settings = db::load_settings(&conn).map_err(err)?;
+    db::list_history(&conn, settings.keep_recent).map_err(err)
+}
+
+#[tauri::command]
+pub fn get_favorites(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Wallpaper>> {
+    let conn = state.conn.lock().unwrap();
+    db::list_favorites(&conn).map_err(err)
+}
+
+#[tauri::command]
+pub fn get_trash(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<Wallpaper>> {
+    let conn = state.conn.lock().unwrap();
+    db::list_trash(&conn).map_err(err)
 }
 
 #[tauri::command]
@@ -53,8 +67,21 @@ pub fn toggle_favorite(
     id: String,
     favorite: bool,
 ) -> CmdResult<()> {
-    let conn = state.conn.lock().unwrap();
-    db::set_favorite(&conn, &id, favorite).map_err(err)
+    {
+        let conn = state.conn.lock().unwrap();
+        if favorite {
+            db::add_favorite(&conn, &id).map_err(err)?;
+        } else {
+            db::trash_favorite(&conn, &id, Utc::now().timestamp()).map_err(err)?;
+        }
+    }
+    // The History window just moved, which can push a wallpaper out of it.
+    engine::enforce_storage_limits(state.inner(), None).map_err(err)
+}
+
+#[tauri::command]
+pub fn clear_trash(state: State<'_, Arc<AppState>>) -> CmdResult<()> {
+    engine::purge_trash(state.inner(), false).map(|_| ()).map_err(err)
 }
 
 #[tauri::command]
@@ -65,6 +92,10 @@ pub fn delete_wallpaper(state: State<'_, Arc<AppState>>, id: String) -> CmdResul
         return Err("cannot delete the wallpaper that is currently in use".into());
     }
     if let Some(w) = db::get_wallpaper(&conn, &id).map_err(err)? {
+        // Favorites only ever leave through the trash.
+        if w.is_favorite {
+            return db::trash_favorite(&conn, &id, Utc::now().timestamp()).map_err(err);
+        }
         let path = state.paths.wallpaper_path(&w.file_name).map_err(err)?;
         let _ = std::fs::remove_file(path);
     }

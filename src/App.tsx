@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { AppStatus, getHistory, getStatus, Wallpaper } from "./lib/api";
+import { AppStatus, getFavorites, getHistory, getStatus, getTrash, Wallpaper } from "./lib/api";
 import HomeView from "./views/HomeView";
 import HistoryView from "./views/HistoryView";
 import SettingsView from "./views/SettingsView";
+import TrashView from "./views/TrashView";
 
-type Tab = "home" | "history" | "favorites" | "settings";
+type Tab = "home" | "history" | "favorites" | "trash" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "home", label: "Overview" },
   { id: "history", label: "History" },
   { id: "favorites", label: "Favorites" },
+  { id: "trash", label: "Trash" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -18,12 +20,21 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("home");
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [history, setHistory] = useState<Wallpaper[]>([]);
+  const [favorites, setFavorites] = useState<Wallpaper[]>([]);
+  const [trash, setTrash] = useState<Wallpaper[]>([]);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [s, h] = await Promise.all([getStatus(), getHistory()]);
+    const [s, h, f, t] = await Promise.all([
+      getStatus(),
+      getHistory(),
+      getFavorites(),
+      getTrash(),
+    ]);
     setStatus(s);
     setHistory(h);
+    setFavorites(f);
+    setTrash(t);
   }, []);
 
   useEffect(() => {
@@ -92,10 +103,17 @@ export default function App() {
           <HistoryView
             key={tab}
             title={tab === "favorites" ? "Favorites" : "History"}
-            items={tab === "favorites" ? history.filter((w) => w.is_favorite) : history}
+            items={tab === "favorites" ? favorites : history}
             currentId={status.settings.current_wallpaper_id}
             refresh={refresh}
             setStatus={setStatus}
+          />
+        )}
+        {tab === "trash" && (
+          <TrashView
+            items={trash}
+            currentId={status.settings.current_wallpaper_id}
+            refresh={refresh}
           />
         )}
         {tab === "settings" && (

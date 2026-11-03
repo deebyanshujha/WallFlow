@@ -84,10 +84,16 @@ still puts something on the desktop.
 ### Storage
 
 Cached images live in `%LOCALAPPDATA%\com.wallflow.app\wallpapers\`, metadata in
-`wallflow.db` alongside it (SQLite). After each download, WallFlow deletes oldest-first until
-both the size budget and the keep-recent count are satisfied. **Favorites, the
-current wallpaper, and your default are never eligible for deletion** — the
-default is stored in a separate directory that the cleanup query cannot reach.
+`wallflow.db` alongside it (SQLite). History is the newest keep-recent wallpapers (7 by
+default). After each download, WallFlow deletes older non-favorites oldest-first until
+both that count and the size budget are satisfied. **Favorites have no limit and do not
+count toward the size budget. They, the current wallpaper, and your default are never
+eligible for this cleanup** — the default is stored in a separate directory that the
+cleanup query cannot reach.
+
+Removing a favorite moves it to Trash, where it can be restored. Trash is deleted for
+good when you clear it, or 30 days after each item was removed. A trashed wallpaper
+that is still on the desktop stays until it is replaced.
 
 ### Security
 
@@ -109,7 +115,7 @@ default is stored in a separate directory that the cleanup query cannot reach.
 ```
 src/                    React control panel (rendering only)
   lib/api.ts            typed wrappers over the Tauri commands
-  views/                Overview, History/Favorites, Settings
+  views/                Overview, History/Favorites, Trash, Settings
   components/
 src-tauri/
   src/

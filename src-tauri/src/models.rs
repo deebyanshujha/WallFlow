@@ -27,6 +27,9 @@ pub struct Wallpaper {
     /// Marked sketchy or NSFW at the source; hidden while NSFW is off.
     #[serde(default)]
     pub nsfw: bool,
+    /// When a removed favorite entered the trash; `None` everywhere else.
+    #[serde(default)]
+    pub trashed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +121,8 @@ pub struct AppStatus {
     pub last_message: Option<String>,
     pub last_error: Option<String>,
     pub storage_used_bytes: u64,
+    /// The part of storage the size budget applies to: not favorites or trash.
+    pub history_bytes: u64,
     pub wallpaper_count: u32,
     pub screen_width: u32,
     pub screen_height: u32,

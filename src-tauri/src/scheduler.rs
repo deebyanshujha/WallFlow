@@ -9,6 +9,8 @@ use tauri::{AppHandle, Emitter};
 /// and goes back to sleep — it does not touch the network unless a change is due.
 pub fn spawn(app: AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
+        purge_expired_trash(&app, &state);
+
         // Launching is not by itself a reason to change the wallpaper. If the
         // schedule says nothing is due, re-apply what we already picked — that
         // costs no network, so starting with Windows never downloads anything.
@@ -22,11 +24,18 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
         let mut ticker = tokio::time::interval(Duration::from_secs(60));
         loop {
             ticker.tick().await;
+            purge_expired_trash(&app, &state);
             if is_change_due(&state) {
                 run_due_change(&app, &state, false).await;
             }
         }
     });
+}
+
+fn purge_expired_trash(app: &AppHandle, state: &AppState) {
+    if matches!(engine::purge_trash(state, true), Ok(n) if n > 0) {
+        let _ = app.emit("wallflow://status-changed", ());
+    }
 }
 
 /// A change is due once the scheduled moment has passed. A zero means the app

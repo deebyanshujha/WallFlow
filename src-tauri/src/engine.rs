@@ -34,6 +34,7 @@ impl AppState {
             None => None,
         };
         let (storage_used_bytes, wallpaper_count) = db::storage_stats(&conn)?;
+        let history_bytes = db::history_bytes(&conn)?;
         let rt = self.runtime.lock().unwrap();
         let (screen_width, screen_height) = platform::primary_resolution();
         Ok(AppStatus {
@@ -44,6 +45,7 @@ impl AppState {
             last_message: rt.last_message.clone(),
             last_error: rt.last_error.clone(),
             storage_used_bytes,
+            history_bytes,
             wallpaper_count,
             screen_width,
             screen_height,
@@ -355,6 +357,7 @@ async fn download_inner(
         is_favorite: false,
         last_used_at: None,
         nsfw: remote.nsfw,
+        trashed_at: None,
     };
 
     {
@@ -367,7 +370,8 @@ async fn download_inner(
     Ok(wallpaper)
 }
 
-/// Never deletes the current wallpaper, the user's default, a favorite, or `keep`.
+/// Trims History to the keep-recent window and the size budget. Never deletes
+/// the current wallpaper, the user's default, a favorite, the trash, or `keep`.
 pub fn enforce_storage_limits(state: &AppState, keep: Option<&str>) -> Result<()> {
     let conn = state.conn.lock().unwrap();
     let settings = db::load_settings(&conn)?;
@@ -379,21 +383,48 @@ pub fn enforce_storage_limits(state: &AppState, keep: Option<&str>) -> Result<()
         protected.push(id.to_string());
     }
 
-    let (mut used, mut count) = db::storage_stats(&conn)?;
+    let recent: Vec<String> = db::list_history(&conn, settings.keep_recent)?
+        .into_iter()
+        .map(|w| w.id)
+        .collect();
+    let mut used = db::history_bytes(&conn)?;
     let max_bytes = settings.max_storage_mb * 1024 * 1024;
 
     let candidates = db::eviction_candidates(&conn, &protected)?;
     for w in candidates {
-        if used <= max_bytes && count <= settings.keep_recent {
+        // Oldest first, so everything outside the window goes before anything in it.
+        if used <= max_bytes && recent.contains(&w.id) {
             break;
         }
         let path = state.paths.wallpaper_path(&w.file_name)?;
         let _ = std::fs::remove_file(&path);
         db::delete_wallpaper(&conn, &w.id)?;
         used = used.saturating_sub(w.bytes);
-        count = count.saturating_sub(1);
     }
     Ok(())
+}
+
+/// How long a removed favorite waits in the trash before it is deleted for good.
+pub const TRASH_RETENTION_SECS: i64 = 30 * 24 * 3600;
+
+/// Permanently deletes trashed wallpapers, or only those past `TRASH_RETENTION_SECS`
+/// when `expired_only` is set. The current wallpaper's file is still in use, so it
+/// stays until something replaces it. Returns how many were deleted.
+pub fn purge_trash(state: &AppState, expired_only: bool) -> Result<usize> {
+    let conn = state.conn.lock().unwrap();
+    let settings = db::load_settings(&conn)?;
+    let cutoff = expired_only.then(|| Utc::now().timestamp() - TRASH_RETENTION_SECS);
+    let mut removed = 0;
+    for w in db::trash_candidates(&conn, cutoff)? {
+        if settings.current_wallpaper_id.as_deref() == Some(w.id.as_str()) {
+            continue;
+        }
+        let path = state.paths.wallpaper_path(&w.file_name)?;
+        let _ = std::fs::remove_file(&path);
+        db::delete_wallpaper(&conn, &w.id)?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 /// A change is due when the scheduled time has passed. There is no polling of
@@ -450,5 +481,152 @@ pub fn compute_next_change(settings: &Settings, now_ts: i64) -> i64 {
             .with_minute(0)
             .unwrap_or(now)
             .timestamp()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state(name: &str) -> AppState {
+        let root = std::env::temp_dir().join(format!("wallflow-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = storage::Paths::new(root).unwrap();
+        let conn = db::open(&paths.db).unwrap();
+        AppState {
+            paths,
+            conn: Mutex::new(conn),
+            client: reqwest::Client::new(),
+            runtime: Mutex::new(Runtime::default()),
+            bundled_default: PathBuf::new(),
+        }
+    }
+
+    /// Adds a wallpaper whose age order follows `n`: higher is newer.
+    fn add(state: &AppState, n: i64) -> String {
+        let id = format!("test:{n}");
+        let w = Wallpaper {
+            id: id.clone(),
+            provider: "test".into(),
+            remote_id: n.to_string(),
+            file_name: format!("test-{n}.jpg"),
+            width: 1,
+            height: 1,
+            source_width: 0,
+            source_height: 0,
+            format: String::new(),
+            bytes: 1,
+            downloaded_at: n,
+            category: "nature".into(),
+            author_name: None,
+            author_url: None,
+            source_url: None,
+            is_favorite: false,
+            last_used_at: None,
+            nsfw: false,
+            trashed_at: None,
+        };
+        db::insert_wallpaper(&state.conn.lock().unwrap(), &w).unwrap();
+        id
+    }
+
+    fn ids(list: Vec<Wallpaper>) -> Vec<String> {
+        list.into_iter().map(|w| w.id).collect()
+    }
+
+    #[test]
+    fn favorites_outlive_the_history_window_and_do_not_shrink_it() {
+        let state = test_state("window");
+        let favorite = add(&state, 1);
+        db::add_favorite(&state.conn.lock().unwrap(), &favorite).unwrap();
+        for n in 2..=20 {
+            add(&state, n);
+            enforce_storage_limits(&state, None).unwrap();
+        }
+
+        let conn = state.conn.lock().unwrap();
+        let history = ids(db::list_history(&conn, 7).unwrap());
+        assert_eq!(history.len(), 7);
+        assert_eq!(history[0], "test:20");
+        assert_eq!(history[6], "test:14");
+        assert!(!history.contains(&favorite));
+        assert_eq!(ids(db::list_favorites(&conn).unwrap()), vec![favorite]);
+        // Seven recents plus the favorite; everything else was evicted.
+        assert_eq!(db::storage_stats(&conn).unwrap().1, 8);
+    }
+
+    #[test]
+    fn the_size_budget_ignores_favorites_and_trash() {
+        let state = test_state("budget");
+        let favorite = add(&state, 1);
+        let trashed = add(&state, 2);
+        let recent = add(&state, 3);
+        {
+            let conn = state.conn.lock().unwrap();
+            for id in [&favorite, &trashed] {
+                db::add_favorite(&conn, id).unwrap();
+            }
+            db::trash_favorite(&conn, &trashed, 100).unwrap();
+            assert_eq!(db::history_bytes(&conn).unwrap(), 1);
+        }
+        enforce_storage_limits(&state, None).unwrap();
+        let conn = state.conn.lock().unwrap();
+        assert!(db::get_wallpaper(&conn, &recent).unwrap().is_some());
+    }
+
+    #[test]
+    fn removed_favorites_wait_in_trash_and_can_be_restored() {
+        let state = test_state("restore");
+        let id = add(&state, 1);
+        let conn = state.conn.lock().unwrap();
+
+        // Only an actual favorite can be sent to the trash.
+        db::trash_favorite(&conn, &id, 100).unwrap();
+        assert!(db::list_trash(&conn).unwrap().is_empty());
+
+        db::add_favorite(&conn, &id).unwrap();
+        db::trash_favorite(&conn, &id, 100).unwrap();
+        assert!(db::list_favorites(&conn).unwrap().is_empty());
+        assert!(db::list_history(&conn, 7).unwrap().is_empty());
+        assert!(db::pick_cached(&conn, "", None, true).unwrap().is_none());
+        assert_eq!(ids(db::list_trash(&conn).unwrap()), vec![id.clone()]);
+
+        db::add_favorite(&conn, &id).unwrap();
+        assert!(db::list_trash(&conn).unwrap().is_empty());
+        assert_eq!(ids(db::list_favorites(&conn).unwrap()), vec![id]);
+    }
+
+    #[test]
+    fn purge_respects_retention_and_the_current_wallpaper() {
+        let state = test_state("purge");
+        let now = Utc::now().timestamp();
+        let expired = add(&state, 1);
+        let fresh = add(&state, 2);
+        let in_use = add(&state, 3);
+        {
+            let conn = state.conn.lock().unwrap();
+            for id in [&expired, &fresh, &in_use] {
+                db::add_favorite(&conn, id).unwrap();
+            }
+            db::trash_favorite(&conn, &expired, now - TRASH_RETENTION_SECS - 1).unwrap();
+            db::trash_favorite(&conn, &fresh, now).unwrap();
+            db::trash_favorite(&conn, &in_use, now - TRASH_RETENTION_SECS - 1).unwrap();
+            let mut s = db::load_settings(&conn).unwrap();
+            s.current_wallpaper_id = Some(in_use.clone());
+            db::save_settings(&conn, &s).unwrap();
+        }
+
+        assert_eq!(purge_trash(&state, true).unwrap(), 1);
+        {
+            let conn = state.conn.lock().unwrap();
+            let mut left = ids(db::list_trash(&conn).unwrap());
+            left.sort();
+            assert_eq!(left, vec![fresh.clone(), in_use.clone()]);
+        }
+
+        // Clearing by hand ignores the age but still keeps what is on screen.
+        assert_eq!(purge_trash(&state, false).unwrap(), 1);
+        let conn = state.conn.lock().unwrap();
+        assert_eq!(ids(db::list_trash(&conn).unwrap()), vec![in_use]);
     }
 }

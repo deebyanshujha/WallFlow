@@ -21,6 +21,8 @@ export interface Wallpaper {
   is_favorite: boolean;
   last_used_at: number | null;
   nsfw: boolean;
+  /** Set while a removed favorite is waiting in the trash. */
+  trashed_at: number | null;
 }
 
 export interface Settings {
@@ -50,6 +52,8 @@ export interface AppStatus {
   last_message: string | null;
   last_error: string | null;
   storage_used_bytes: number;
+  /** The part of storage the size budget applies to: not favorites or trash. */
+  history_bytes: number;
   wallpaper_count: number;
   screen_width: number;
   screen_height: number;
@@ -58,6 +62,9 @@ export interface AppStatus {
 
 export const getStatus = () => invoke<AppStatus>("get_status");
 export const getHistory = () => invoke<Wallpaper[]>("get_history");
+export const getFavorites = () => invoke<Wallpaper[]>("get_favorites");
+export const getTrash = () => invoke<Wallpaper[]>("get_trash");
+export const clearTrash = () => invoke<void>("clear_trash");
 export const changeNow = () => invoke<AppStatus>("change_now");
 export const setWallpaperById = (id: string) =>
   invoke<AppStatus>("set_wallpaper_by_id", { id });

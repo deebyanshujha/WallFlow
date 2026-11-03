@@ -88,10 +88,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_history,
+            commands::get_favorites,
+            commands::get_trash,
             commands::change_now,
             commands::set_wallpaper_by_id,
             commands::toggle_favorite,
             commands::delete_wallpaper,
+            commands::clear_trash,
             commands::save_settings,
             commands::set_default_wallpaper,
             commands::use_default_wallpaper,
